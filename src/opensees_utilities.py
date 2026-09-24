@@ -110,9 +110,19 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
             nodes = [i for i in nodes_list if i not in remove_list] 
             op.rigidDiaphragm(3, *nodes)
     
-    # apply mass to the respective nodes
-    mass_df.apply(lambda row: op.mass(row.PointElm, row.UX, row.UY, row.UZ, row.RX, row.RY, row.RZ), axis = 'columns')
-    
+    # Apply mass only to nodes that were successfully created. ETABS can
+    # include PointElm rows for auxiliary/removed points that are not part of
+    # the OpenSees node set (for example node 65 in ETABS 19 exports).
+    node_tags = {int(tag) for tag in op.getNodeTags()}
+    for _, row in mass_df.iterrows():
+        node_tag = int(row.PointElm)
+        if node_tag not in node_tags:
+            print(f'Warning: skipping mass for ETABS node {node_tag}; '
+                  'the node is not present in the OpenSees model.')
+            continue
+        op.mass(node_tag, float(row.UX), float(row.UY), float(row.UZ),
+                float(row.RX), float(row.RY), float(row.RZ))
+
     return
 
 # ADD FRAMES OBJECTS TO THE OPENSEES MODEL
