@@ -166,8 +166,15 @@ def get_nodal_masses(model=None):
     
     # extract the assembled joint masses from etabs using the get_dbtable method
     mass_df = get_dbtable('Assembled Joint Masses', model)
-    mass_df = mass_df.astype({'PointElm': int  , 'UX' : float, 'UY' : float, 'UZ' : float, 'RX' : float, 
-                              'RY'      : float, 'RZ' : float, 'X'  : float, 'Y'  : float, 'Z'  : float})
+    # ETABS 19 prefixes some point-element IDs with '~' in database-table
+    # output (for example, '~64'). The marker is metadata, not part of the ID.
+    numeric_cols = ['PointElm', 'UX', 'UY', 'UZ', 'RX', 'RY', 'RZ', 'X', 'Y', 'Z']
+    mass_df[numeric_cols] = mass_df[numeric_cols].apply(
+        lambda column: pd.to_numeric(
+            column.astype(str).str.lstrip('~'), errors='raise'
+        )
+    )
+    mass_df['PointElm'] = mass_df['PointElm'].astype(int)
     return mass_df.copy()
 
 # EXTRACT FRAME SECTION PROPERTIES FROM ETABS
