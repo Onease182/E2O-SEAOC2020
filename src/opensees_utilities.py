@@ -110,34 +110,66 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
             nodes = [i for i in nodes_list if i not in remove_list] 
             op.rigidDiaphragm(3, *nodes)
     
-    # Apply mass to the generated OpenSees nodes. ETABS 19 can export
-    # PointElm IDs that differ from the IDs generated above, so fall back to
-    # matching the ETABS coordinates to the generated node coordinates.
+    # Apply mass to the generated OpenSees nodes.
+    # ETABS 19+ can export PointElm IDs that differ from the UniqueName
+    # values used when creating OpenSees nodes (especially after hinge
+    # node remapping). We try several strategies in order:
+    #   1. Direct PointElm ID match
+    #   2. Hinge-node remapping (real joint → new joint)
+    #   3. Geometric match with a realistic coordinate tolerance
+    #   4. Geometric match on rounded coordinates
     node_tags = {int(tag) for tag in op.getNodeTags()}
     generated_coords = joints_df[['UniqueName', 'X', 'Y', 'Z']].copy()
     generated_coords['UniqueName'] = generated_coords['UniqueName'].astype(int)
     generated_coords = generated_coords[generated_coords.UniqueName.isin(node_tags)]
+    generated_coords['X'] = generated_coords['X'].astype(float)
+    generated_coords['Y'] = generated_coords['Y'].astype(float)
+    generated_coords['Z'] = generated_coords['Z'].astype(float)
     auxiliary_nodes = {int(tag) for tag in list_new_joints}
+
+    # Build reverse hinge map: new_joint → real_joint (and real → new)
+    hinge_real_to_new = {int(k): int(v[0]) for k, v in dict_of_hinges.items()}
+    hinge_new_to_real = {v: k for k, v in hinge_real_to_new.items()}
+
     masses_by_node = {}
     skipped_nodes = []
+    coord_tol = 0.1  # inches – far more realistic than 1e-8 for ETABS export
 
     for _, row in mass_df.iterrows():
-        node_tag = int(row.PointElm)
-        if node_tag not in node_tags:
-            # ETABS 19 exports internal point IDs (for example 65) that this
-            # model intentionally renames for hinge nodes. Prefer that exact
-            # mapping over geometric matching so mass is applied to the node
-            # actually connected to the frame elements.
-            hinge_node = dict_of_hinges.get(node_tag, (None,))[0]
-            if hinge_node in node_tags:
-                node_tag = int(hinge_node)
+        try:
+            node_tag = int(row.PointElm)
+        except (TypeError, ValueError):
+            skipped_nodes.append(row.PointElm)
+            continue
 
+        # Strategy 1 & 2: direct ID or hinge remap
         if node_tag not in node_tags:
+            if node_tag in hinge_real_to_new and hinge_real_to_new[node_tag] in node_tags:
+                node_tag = hinge_real_to_new[node_tag]
+            elif node_tag in hinge_new_to_real and hinge_new_to_real[node_tag] in node_tags:
+                node_tag = hinge_new_to_real[node_tag]
+
+        # Strategy 3 & 4: geometric match
+        if node_tag not in node_tags:
+            try:
+                rx, ry, rz = float(row.X), float(row.Y), float(row.Z)
+            except (TypeError, ValueError):
+                skipped_nodes.append(node_tag)
+                continue
+
             matches = generated_coords[
-                np.isclose(generated_coords.X.astype(float), float(row.X), atol=1e-8)
-                & np.isclose(generated_coords.Y.astype(float), float(row.Y), atol=1e-8)
-                & np.isclose(generated_coords.Z.astype(float), float(row.Z), atol=1e-8)
+                np.isclose(generated_coords.X, rx, atol=coord_tol)
+                & np.isclose(generated_coords.Y, ry, atol=coord_tol)
+                & np.isclose(generated_coords.Z, rz, atol=coord_tol)
             ]
+            if matches.empty:
+                # Try rounded coordinates (handles floating-point noise)
+                matches = generated_coords[
+                    (generated_coords.X.round(3) == round(rx, 3))
+                    & (generated_coords.Y.round(3) == round(ry, 3))
+                    & (generated_coords.Z.round(3) == round(rz, 3))
+                ]
+
             preferred = matches[~matches.UniqueName.isin(auxiliary_nodes)]
             if preferred.empty:
                 preferred = matches
@@ -149,16 +181,28 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
         mass_values = np.array([
             float(row.UX), float(row.UY), float(row.UZ),
             float(row.RX), float(row.RY), float(row.RZ)
-        ])
+        ], dtype=float)
         masses_by_node[node_tag] = masses_by_node.get(
             node_tag, np.zeros(6)
         ) + mass_values
 
+    total_trans_mass = 0.0
     for node_tag, mass_values in masses_by_node.items():
         op.mass(node_tag, *mass_values.tolist())
+        total_trans_mass += abs(mass_values[0]) + abs(mass_values[1]) + abs(mass_values[2])
+
     if skipped_nodes:
         print(f'Warning: skipped {len(skipped_nodes)} ETABS mass rows '
               'whose coordinates do not match an OpenSees node.')
+    print(f'Mass assigned to {len(masses_by_node)} nodes '
+          f'(total |UX|+|UY|+|UZ| ≈ {total_trans_mass:.4g}).')
+
+    if total_trans_mass < 1e-6:
+        raise RuntimeError(
+            'OpenSees model has essentially zero translational mass after '
+            'ETABS node mapping. Check that Assembled Joint Masses were '
+            'exported correctly and that hinge-node remapping is consistent.'
+        )
 
     return
 
@@ -459,7 +503,7 @@ def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, 
     
     total_run_time = 50 # seconds
     time_step = 0.01 # seconds
-    total_num_of_steps = int(total_run_time / time_step)
+    total_num_of_steps = total_run_time / time_step
     
     # default initialization of constants to be used in the execution loop
     failed = 0
