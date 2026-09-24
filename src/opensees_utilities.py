@@ -110,18 +110,46 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
             nodes = [i for i in nodes_list if i not in remove_list] 
             op.rigidDiaphragm(3, *nodes)
     
-    # Apply mass only to nodes that were successfully created. ETABS can
-    # include PointElm rows for auxiliary/removed points that are not part of
-    # the OpenSees node set (for example node 65 in ETABS 19 exports).
+    # Apply mass to the generated OpenSees nodes. ETABS 19 can export
+    # PointElm IDs that differ from the IDs generated above, so fall back to
+    # matching the ETABS coordinates to the generated node coordinates.
     node_tags = {int(tag) for tag in op.getNodeTags()}
+    generated_coords = joints_df[['UniqueName', 'X', 'Y', 'Z']].copy()
+    generated_coords['UniqueName'] = generated_coords['UniqueName'].astype(int)
+    generated_coords = generated_coords[generated_coords.UniqueName.isin(node_tags)]
+    auxiliary_nodes = {int(tag) for tag in list_new_joints}
+    masses_by_node = {}
+    skipped_nodes = []
+
     for _, row in mass_df.iterrows():
         node_tag = int(row.PointElm)
         if node_tag not in node_tags:
-            print(f'Warning: skipping mass for ETABS node {node_tag}; '
-                  'the node is not present in the OpenSees model.')
-            continue
-        op.mass(node_tag, float(row.UX), float(row.UY), float(row.UZ),
-                float(row.RX), float(row.RY), float(row.RZ))
+            matches = generated_coords[
+                np.isclose(generated_coords.X.astype(float), float(row.X), atol=1e-8)
+                & np.isclose(generated_coords.Y.astype(float), float(row.Y), atol=1e-8)
+                & np.isclose(generated_coords.Z.astype(float), float(row.Z), atol=1e-8)
+            ]
+            preferred = matches[~matches.UniqueName.isin(auxiliary_nodes)]
+            if preferred.empty:
+                preferred = matches
+            if preferred.empty:
+                skipped_nodes.append(node_tag)
+                continue
+            node_tag = int(preferred.iloc[0].UniqueName)
+
+        mass_values = np.array([
+            float(row.UX), float(row.UY), float(row.UZ),
+            float(row.RX), float(row.RY), float(row.RZ)
+        ])
+        masses_by_node[node_tag] = masses_by_node.get(
+            node_tag, np.zeros(6)
+        ) + mass_values
+
+    for node_tag, mass_values in masses_by_node.items():
+        op.mass(node_tag, *mass_values.tolist())
+    if skipped_nodes:
+        print(f'Warning: skipped {len(skipped_nodes)} ETABS mass rows '
+              'whose coordinates do not match an OpenSees node.')
 
     return
 
