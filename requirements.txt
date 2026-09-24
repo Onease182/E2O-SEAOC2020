@@ -1,0 +1,7 @@
+numpy
+pandas
+openpyxl
+comtypes; platform_system == "Windows"
+openseespy
+tqdm
+matplotlib

@@ -37,8 +37,12 @@
 
 '''
 
-import openseespy.opensees as op
-import openseespy.postprocessing.Get_Rendering as opp
+try:
+    import openseespy.opensees as op
+    import openseespy.postprocessing.Get_Rendering as opp
+except ImportError:  # OpenSeesPy is installed separately and may be platform-specific.
+    op = None
+    opp = None
 import pandas as pd
 import numpy as np
 import math
@@ -57,9 +61,20 @@ beam_transf_tag = 2
 coordTransf = "Linear"  # Can be {Linear, PDelta, Corotational}
 massType = "-lMass"     # Can be {-lMass, -cMass}
 tol = 1e-3
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GROUND_MOTION_PATH = os.path.join(PROJECT_ROOT, 'src', 'BM68elc.acc')
+HINGE_PROPERTIES_PATH = os.path.join(PROJECT_ROOT, 'worksheets', 'NL Properties Summary.xlsx')
+
+def _require_opensees():
+    if op is None:
+        raise RuntimeError(
+            'OpenSeesPy is required for model generation and analysis. '
+            'Install it with: python -m pip install openseespy'
+        )
 
 # INITIATE A OPENSEES MODEL
 def initiate_model():
+    _require_opensees()
     # remove existing model
     op.wipe()
     
@@ -157,6 +172,7 @@ def modal_response(numEigen):
 
 # PLOT MODE SHAPES OPTAINED FROM MODAL ANALYSIS IS OPENSEES
 def plot_opensees_mode_shapes():
+    _require_opensees()
     opp.plot_model()
     for i in range(1, numEigen+1):
         opp.plot_modeshape(i, 50)
@@ -271,7 +287,7 @@ def read_nonlinear_hinge_properties():
     """
     
     # read properties from Excel
-    data = pd.read_excel(os.path.join(os.path.dirname(os.getcwd()), 'worksheets', 'NL Properties Summary.xlsx'), sheet_name = 'WUF hinge')
+    data = pd.read_excel(HINGE_PROPERTIES_PATH, sheet_name='WUF hinge')
     data.drop(columns = ['IO (θy)','LS (θy)','CP (θy)', 'Beam Standard Section?'], inplace = True)
     
     # generate properties for OpenSees Input
@@ -313,13 +329,16 @@ def read_nonlinear_hinge_properties():
     return data
 
 # RUN NLRHA USING RAYLEIGH DAMPING IN ETABS
-def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, dict_of_rxn_nodes, zeta, initialOrTangent='initial', parent_dir=os.getcwd()):
+def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, dict_of_rxn_nodes, zeta, initialOrTangent='initial', parent_dir=None):
+    if parent_dir is None:
+        parent_dir = os.path.join(PROJECT_ROOT, 'results')
+    os.makedirs(parent_dir, exist_ok=True)
     
     # remove any existing analysis data
     op.wipeAnalysis ()
     
     # define a time series to add the ground motion
-    op.timeSeries('Path', 2, '-dt', 0.01, '-filePath', 'BM68elc.acc', '-factor', 3.0*g)
+    op.timeSeries('Path', 2, '-dt', 0.01, '-filePath', GROUND_MOTION_PATH, '-factor', 3.0*g)
     op.pattern('UniformExcitation', 2, 1, '-accel', 2)
     
     # uncomment/comment the code below to run bideirectional/unidirectional ground motion analysis
@@ -432,7 +451,12 @@ def perform_modal_analysis_and_comparison(etabs_periods):
     return
 
 # EXECUTE ANALYSIS IN OPENSEES
-def run_opensees_model(dict_of_hinges={}, dict_of_disp_nodes={}, dict_of_rxn_nodes={}, zeta=0.05, initialOrTangent='', parent_dir=os.getcwd()):
+def run_opensees_model(dict_of_hinges=None, dict_of_disp_nodes=None, dict_of_rxn_nodes=None, zeta=0.05, initialOrTangent='', parent_dir=None):
+    dict_of_hinges = {} if dict_of_hinges is None else dict_of_hinges
+    dict_of_disp_nodes = {} if dict_of_disp_nodes is None else dict_of_disp_nodes
+    dict_of_rxn_nodes = {} if dict_of_rxn_nodes is None else dict_of_rxn_nodes
+    if parent_dir is None:
+        parent_dir = os.path.join(PROJECT_ROOT, 'results')
 #    opp.plot_model()
     periods, eigenValues = run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, dict_of_rxn_nodes, zeta, initialOrTangent, parent_dir)
     return periods, eigenValues

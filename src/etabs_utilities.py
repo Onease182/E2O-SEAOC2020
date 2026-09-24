@@ -103,7 +103,7 @@ def get_joints(model=None):
 # EXTRACT NODAL LOADS FROM ETABS
 def get_pt_loads(model=None):
     if model is None:
-        model = get_model_from_etabs(True)
+        model = get_model_from_etabs()
     
     joints_df, dict_of_hinges, dict_of_hinges_1, list_new_joints = get_joints(model)
     
@@ -116,7 +116,7 @@ def get_pt_loads(model=None):
             pt_loads_df = pd.DataFrame.from_dict({col:val for (col,val) in zip(PT_LOADS_DATA_COLS, model.PointObj.GetLoadForce(str(row.UniqueName))[1:-1])})
         except:
             continue
-        pts_loads_df = pts_loads_df.append(pt_loads_df, ignore_index=True)
+        pts_loads_df = pd.concat([pts_loads_df, pt_loads_df], ignore_index=True)
     
     pts_loads_df = pts_loads_df.astype({'UniqueName' : int, })
     
@@ -128,7 +128,7 @@ def get_pt_loads(model=None):
 # EXTRACT FRAME CONNECTIVITY FROM ETABS
 def get_frames(dict_of_hinges_1, model=None):
     if model is None:
-        model = get_model_from_etabs(True)
+        model = get_model_from_etabs()
     
     # Extract all frame labels from etabs
     frame_label_data = model.FrameObj.GetLabelNameList()
@@ -162,7 +162,7 @@ def get_frames(dict_of_hinges_1, model=None):
 # EXTRACT NODAL MASSES FROM ETABS
 def get_nodal_masses(model=None):
     if model is None:
-        model = get_model_from_etabs(True)
+        model = get_model_from_etabs()
     
     # extract the assembled joint masses from etabs using the get_dbtable method
     mass_df = get_dbtable('Assembled Joint Masses', model)
@@ -173,7 +173,7 @@ def get_nodal_masses(model=None):
 # EXTRACT FRAME SECTION PROPERTIES FROM ETABS
 def get_frame_props(dict_of_hinges_1, model=None):
     if model is None:
-        model = get_model_from_etabs(True)
+        model = get_model_from_etabs()
     
     frames_df, dict_of_hinges_2 = get_frames(dict_of_hinges_1, model)
     
@@ -189,7 +189,7 @@ def get_frame_props(dict_of_hinges_1, model=None):
         
         # if the property does not exist, extract from etabs and add to the dataframe using append
         frame_prop_df = pd.DataFrame.from_dict({row.Prop:{col:val for (col,val) in zip(FRAME_PROP_COLS_2, model.PropFrame.GetSectProps(row.Prop)[:-1])}}, orient='index')
-        frame_props_df = frame_props_df.append(frame_prop_df)
+        frame_props_df = pd.concat([frame_props_df, frame_prop_df])
         
     return frame_props_df.copy()
 

@@ -37,38 +37,56 @@
 
 '''
 
-import comtypes.client
+try:
+    import comtypes.client
+    from comtypes import COMError
+except ImportError:  # ETABS integration is only available on Windows with comtypes installed.
+    comtypes = None
+    COMError = OSError
 import sys
 import time
 import pandas as pd
 import numpy as np
 
 def get_model_from_etabs():
+    if comtypes is None:
+        raise RuntimeError(
+            'ETABS integration requires Windows, ETABS, and the comtypes package.'
+        )
     try:
         # attach to a running instance of ETABS
         etabs = comtypes.client.GetActiveObject('CSI.ETABS.API.ETABSObject')
-    except (OSError, comtypes.COMError):
-        print("No running instance of the program found or failed to attach.")
-        sys.exit(-1)
+    except (OSError, COMError) as exc:
+        raise RuntimeError(
+            'No running ETABS instance was found or the ETABS API connection failed.'
+        ) from exc
     return etabs.SapModel
 
-def set_load_cases_selected_for_display(loadCaseList, model = get_model_from_etabs()):
+def set_load_cases_selected_for_display(loadCaseList, model=None):
+    if model is None:
+        model = get_model_from_etabs()
     return model.DatabaseTables.SetLoadCasesSelectedForDisplay(loadCaseList)
 
-def set_load_combo_selected_for_display(loadComboList, model = get_model_from_etabs()):
+def set_load_combo_selected_for_display(loadComboList, model=None):
+    if model is None:
+        model = get_model_from_etabs()
     return model.DatabaseTables.SetLoadCombinationsSelectedForDisplay(loadComboList)
 
-def set_load_patterns_selected_for_display(loadPatternList, model = get_model_from_etabs()):
+def set_load_patterns_selected_for_display(loadPatternList, model=None):
+    if model is None:
+        model = get_model_from_etabs()
     return model.DatabaseTables.SetLoadPatternsSelectedForDisplay(loadPatternList)
 
-def deselect_all_load_cases_and_combos_for_output(model = get_model_from_etabs()):
+def deselect_all_load_cases_and_combos_for_output(model=None):
+    if model is None:
+        model = get_model_from_etabs()
     return [bool(~set_load_cases_selected_for_display('', model)[-1]), 
             bool(~set_load_combo_selected_for_display('', model)[-1]),]
 
 def get_database_table_for_all_load_cases_and_combos(table_title, model=None):
     # connect to ETABS model
     if model is None:
-        model = get_model_from_etabs(True)
+        model = get_model_from_etabs()
     
     # set units to kip, in (default for OpenSees)
     model.SetPresentUnits(3)

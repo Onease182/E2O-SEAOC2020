@@ -49,7 +49,8 @@ import os
 
 if __name__ == '__main__':
     start = start_time()
-    working_dir = os.path.join(os.path.dirname(os.getcwd()), 'results')
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    working_dir = os.path.join(project_root, 'results')
     
     if not os.path.exists(working_dir):
         os.makedirs(working_dir)

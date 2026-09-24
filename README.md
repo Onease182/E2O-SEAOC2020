@@ -7,18 +7,24 @@ currently limit the scope of this library to the enclosed model.
 
 #### Recommended steps to use this library:
 
-1. Fork this repository to your GitHub account and clone to your machine. 
-2. Run the enclosed ETABS model and keep ETABS open in the background as you work on Step 3 and beyond.
-3. Use your favorite Python distribution and IDE to run the `main.py` script. We recommend using Spyder, which is included in the [Anaconda3-2019.10](https://repo.anaconda.com/archive/) distribution. Newer Anaconda3 distributions have issues interfacing with ETABS.
+1. Clone the repository rather than running `git pull` in an ordinary folder:
+   ```bat
+   git clone https://github.com/Onease182/E2O-SEAOC2020.git
+   cd E2O-SEAOC2020
+   ```
+2. Install the dependencies from the repository root:
+   ```bat
+   python -m pip install -r requirements.txt
+   ```
+3. Open the enclosed ETABS model and keep ETABS running while the script executes.
+4. Run the application from any directory with:
+   ```bat
+   python src\main.py
+   ```
 
-If you use the Anaconda3 distribution noted above, you may need to also manually install Python packages which are not included in the Anaconda3 distribution but are noted as dependencies below. We recommend Using `pip` on the Anaconda Powershell for manually installing packages.
+The application resolves worksheet, ground-motion, and results paths from the repository location, so it no longer depends on the current working directory. ETABS and OpenSeesPy are runtime requirements for the full analysis; importing the modules on another platform now gives a clear dependency error instead of failing during module import.
 
-#### Add-on dependency packages required to use this library:
-  - [OpenSeesPy](https://openseespydoc.readthedocs.io/en/latest/index.html) **not included in Anaconda3-2019.10** ([installation tutorial](https://www.youtube.com/watch?v=uuhuewl1Z-k))
-  - [Pandas](https://pandas.pydata.org/pandas-docs/stable/getting_started/install.html) `included in Anaconda3-2019.10`
-  - [comtypes](https://pypi.org/project/comtypes/) `included in Anaconda3-2019.10`
-  - [numpy](https://numpy.org/install/) `included in Anaconda3-2019.10`
-  - [tqdm](https://pypi.org/project/tqdm/) **not included in Anaconda3-2019.10** (installation similar to OpenSeesPy tutorial)
+The dependency versions are intentionally not pinned because OpenSeesPy publishes platform-specific wheels. The required packages are listed in [`requirements.txt`](requirements.txt).
   
 If you would like to propose changes, please submit a pull requests from your fork.
 
