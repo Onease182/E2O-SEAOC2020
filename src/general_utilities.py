@@ -61,20 +61,30 @@ def get_model_from_etabs():
     except (OSError, COMError) as exc:
         errors.append(f'GetActiveObject failed: {exc}')
 
-    try:
-        # ETABS may be open without being discoverable through GetActiveObject.
-        # The CSI helper asks ETABS for its active API instance instead.
-        helper = comtypes.client.CreateObject('ETABSv1.Helper')
-        helper = helper.QueryInterface(comtypes.gen.ETABSv1.cHelper)
-        etabs = helper.GetObject('CSI.ETABS.API.ETABSObject')
-        return etabs.SapModel
-    except (OSError, COMError, AttributeError, RuntimeError) as exc:
-        errors.append(f'ETABSv1.Helper failed: {exc}')
-        raise RuntimeError(
-            'ETABS is open, but its API instance could not be accessed. '
-            'In ETABS, enable Tools > Active instance for API, then retry. '
-            f"Connection details: {'; '.join(errors)}"
-        ) from exc
+    # ETABS may be open without being discoverable through GetActiveObject.
+    # The CSI helper asks ETABS for its active API instance instead. ETABS has
+    # used both ETABSv1.Helper and versioned helper registrations over time.
+    for helper_progid in ('ETABSv1.Helper', 'ETABSv20.Helper', 'ETABSv19.Helper',
+                          'ETABSv18.Helper', 'ETABSv17.Helper', 'ETABSv16.Helper'):
+        try:
+            helper = comtypes.client.CreateObject(helper_progid)
+            helper_type = helper_progid.replace('.Helper', '')
+            helper = helper.QueryInterface(
+                getattr(comtypes.gen, helper_type).cHelper
+            )
+            etabs = helper.GetObject('CSI.ETABS.API.ETABSObject')
+            if etabs is not None and getattr(etabs, 'SapModel', None) is not None:
+                return etabs.SapModel
+            errors.append(f'{helper_progid} returned no active API instance')
+        except (OSError, COMError, AttributeError, RuntimeError) as exc:
+            errors.append(f'{helper_progid} failed: {exc}')
+
+    raise RuntimeError(
+        'ETABS is open, but no active API instance is registered. In ETABS, '
+        'choose Tools > Active instance for API (or Set as active instance for API), '
+        'then retry. Also ensure Python and ETABS have the same 32/64-bit architecture. '
+        f"Connection details: {'; '.join(errors)}"
+    )
 
 def set_load_cases_selected_for_display(loadCaseList, model=None):
     if model is None:
