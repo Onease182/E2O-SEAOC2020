@@ -124,6 +124,15 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
     for _, row in mass_df.iterrows():
         node_tag = int(row.PointElm)
         if node_tag not in node_tags:
+            # ETABS 19 exports internal point IDs (for example 65) that this
+            # model intentionally renames for hinge nodes. Prefer that exact
+            # mapping over geometric matching so mass is applied to the node
+            # actually connected to the frame elements.
+            hinge_node = dict_of_hinges.get(node_tag, (None,))[0]
+            if hinge_node in node_tags:
+                node_tag = int(hinge_node)
+
+        if node_tag not in node_tags:
             matches = generated_coords[
                 np.isclose(generated_coords.X.astype(float), float(row.X), atol=1e-8)
                 & np.isclose(generated_coords.Y.astype(float), float(row.Y), atol=1e-8)
