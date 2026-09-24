@@ -229,6 +229,14 @@ def modal_response(numEigen):
                 f'full generalized LAPACK. ARPACK: {arpack_error}; '
                 f'LAPACK: {lapack_error}'
             ) from lapack_error
+    eigenValues = np.asarray(eigenValues, dtype=float)
+    if (len(eigenValues) < numEigen or not np.all(np.isfinite(eigenValues))
+            or np.any(eigenValues <= 0)):
+        raise RuntimeError(
+            'OpenSees returned invalid eigenvalues. The model is singular or '
+            'has insufficient mass after ETABS node mapping: '
+            f'{eigenValues.tolist()}'
+        )
     return eigenValues
 
 # PLOT MODE SHAPES OPTAINED FROM MODAL ANALYSIS IS OPENSEES
@@ -410,7 +418,7 @@ def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, 
     op.numberer('RCM')
     op.system('UmfPack')
 #    op.test('NormDispIncr', 1e-2, 100000, 0, 0)
-    op.test('EnergyIncr', 1e-4, 1e4, 0, 2)
+    op.test('EnergyIncr', 1e-4, 10000, 0, 2)
 
     # available set of algorithms if the default fails
     backup_algos = {'Modified Newton w/ Initial Stiffness': ['ModifiedNewton', '-initial'],
