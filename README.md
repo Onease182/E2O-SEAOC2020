@@ -16,7 +16,7 @@ currently limit the scope of this library to the enclosed model.
    ```bat
    python -m pip install -r requirements.txt
    ```
-3. Open the enclosed ETABS model and keep ETABS running while the script executes.
+3. Open the enclosed ETABS model and keep ETABS running while the script executes. In ETABS, verify that **Tools → Active instance for API** is enabled; this allows external Python programs to attach to the open model.
 4. Run the application from any directory with:
    ```bat
    python src\main.py

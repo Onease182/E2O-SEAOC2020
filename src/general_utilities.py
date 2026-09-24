@@ -53,14 +53,28 @@ def get_model_from_etabs():
         raise RuntimeError(
             'ETABS integration requires Windows, ETABS, and the comtypes package.'
         )
+    errors = []
     try:
-        # attach to a running instance of ETABS
+        # First try the COM running-object table.
         etabs = comtypes.client.GetActiveObject('CSI.ETABS.API.ETABSObject')
+        return etabs.SapModel
     except (OSError, COMError) as exc:
+        errors.append(f'GetActiveObject failed: {exc}')
+
+    try:
+        # ETABS may be open without being discoverable through GetActiveObject.
+        # The CSI helper asks ETABS for its active API instance instead.
+        helper = comtypes.client.CreateObject('ETABSv1.Helper')
+        helper = helper.QueryInterface(comtypes.gen.ETABSv1.cHelper)
+        etabs = helper.GetObject('CSI.ETABS.API.ETABSObject')
+        return etabs.SapModel
+    except (OSError, COMError, AttributeError, RuntimeError) as exc:
+        errors.append(f'ETABSv1.Helper failed: {exc}')
         raise RuntimeError(
-            'No running ETABS instance was found or the ETABS API connection failed.'
+            'ETABS is open, but its API instance could not be accessed. '
+            'In ETABS, enable Tools > Active instance for API, then retry. '
+            f"Connection details: {'; '.join(errors)}"
         ) from exc
-    return etabs.SapModel
 
 def set_load_cases_selected_for_display(loadCaseList, model=None):
     if model is None:
