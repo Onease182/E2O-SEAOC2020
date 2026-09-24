@@ -166,26 +166,48 @@ def get_nodal_masses(model=None):
     
     # extract the assembled joint masses from etabs using the get_dbtable method
     mass_df = get_dbtable('Assembled Joint Masses', model)
+
+    # Ensure X/Y/Z columns exist so we can fill them
+    for col in ('X', 'Y', 'Z'):
+        if col not in mass_df.columns:
+            mass_df[col] = float('nan')
+
     # ETABS 19 prefixes some point-element IDs with '~' in database-table
     # output (for example, '~64'). The marker is metadata, not part of the ID.
+    # GetCoordCartesian return signatures vary by ETABS version; try both
+    # common forms (tuple-of-coords vs. (ret, x, y, z, ...)).
     for index, point_id in mass_df['PointElm'].items():
         point_id = str(point_id).lstrip('~')
         point_names = [point_id, f'N{point_id}']
+        coords_found = False
         for point_name in point_names:
-            try:
-                coordinates = model.PointObj.GetCoordCartesian(point_name, 'Global')
-                if len(coordinates) >= 3:
-                    mass_df.loc[index, ['X', 'Y', 'Z']] = coordinates[:3]
+            for call_args in [(), ('Global',)]:
+                try:
+                    result = model.PointObj.GetCoordCartesian(point_name, *call_args)
+                    if not isinstance(result, (list, tuple)) or len(result) < 3:
+                        continue
+                    # Heuristic: if first element looks like a return code, skip it
+                    if (isinstance(result[0], (int, float)) and abs(result[0]) < 10
+                            and len(result) >= 4):
+                        x, y, z = float(result[1]), float(result[2]), float(result[3])
+                    else:
+                        x, y, z = float(result[0]), float(result[1]), float(result[2])
+                    mass_df.loc[index, ['X', 'Y', 'Z']] = [x, y, z]
+                    coords_found = True
                     break
-            except (AttributeError, IndexError, TypeError, ValueError):
-                # Try the alternate ETABS internal-point naming convention.
-                continue
+                except Exception:
+                    continue
+            if coords_found:
+                break
+
     numeric_cols = ['PointElm', 'UX', 'UY', 'UZ', 'RX', 'RY', 'RZ', 'X', 'Y', 'Z']
-    mass_df[numeric_cols] = mass_df[numeric_cols].apply(
-        lambda column: pd.to_numeric(
-            column.astype(str).str.lstrip('~'), errors='raise'
+    for col in numeric_cols:
+        if col not in mass_df.columns:
+            continue
+        mass_df[col] = pd.to_numeric(
+            mass_df[col].astype(str).str.lstrip('~'), errors='coerce'
         )
-    )
+    mass_df = mass_df.dropna(subset=['PointElm'])
     mass_df['PointElm'] = mass_df['PointElm'].astype(int)
     return mass_df.copy()
 
@@ -232,7 +254,7 @@ def get_frame_props_from_db_table(model=None):
 # GET JOINTS WHERE REACTION NEEDS TO BE RECORDED AND WHERE DISPLACEMENT NEEDS TO BE RECORDED
 def get_node_dicts(joints_df):
     
-    # joints not on the lowest level are diaplcement nodes
+    # joints not on the lowest level are diaplacement nodes
     disp_joints_df = joints_df[joints_df.Z != joints_df.Z.min()].copy()
     
     # all joints at the lowest level are reaction nodes
