@@ -213,8 +213,22 @@ def add_nodal_loads(loads_df):
 # PERFORM MODAL ANALYSIS IN OPENSEES
 def modal_response(numEigen):
     
-    # calculate eigenvalues    
-    eigenValues = op.eigen('-genBandArpack', numEigen) #can be either of: {'-genBandArpack', '-fullGenLapack'}
+    # ARPACK is efficient for large models, but can fail on the constrained
+    # ETABS 19 model when the banded factorization is singular. The full
+    # generalized LAPACK solver is slower but robust for this model size.
+    try:
+        eigenValues = op.eigen('-genBandArpack', numEigen)
+    except Exception as arpack_error:
+        print('Warning: ARPACK eigenvalue analysis failed; retrying with '
+              'the full generalized LAPACK solver.')
+        try:
+            eigenValues = op.eigen('-fullGenLapack', numEigen)
+        except Exception as lapack_error:
+            raise RuntimeError(
+                'OpenSees eigenvalue analysis failed with both ARPACK and '
+                f'full generalized LAPACK. ARPACK: {arpack_error}; '
+                f'LAPACK: {lapack_error}'
+            ) from lapack_error
     return eigenValues
 
 # PLOT MODE SHAPES OPTAINED FROM MODAL ANALYSIS IS OPENSEES
