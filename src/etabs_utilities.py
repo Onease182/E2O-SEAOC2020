@@ -173,7 +173,7 @@ def get_nodal_masses(model=None):
         point_names = [point_id, f'N{point_id}']
         for point_name in point_names:
             try:
-                coordinates = model.PointObj.GetCoordCartesian(point_name)
+                coordinates = model.PointObj.GetCoordCartesian(point_name, 'Global')
                 if len(coordinates) >= 3:
                     mass_df.loc[index, ['X', 'Y', 'Z']] = coordinates[:3]
                     break
