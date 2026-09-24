@@ -169,14 +169,17 @@ def get_nodal_masses(model=None):
     # ETABS 19 prefixes some point-element IDs with '~' in database-table
     # output (for example, '~64'). The marker is metadata, not part of the ID.
     for index, point_id in mass_df['PointElm'].items():
-        try:
-            point_id = str(point_id).lstrip('~')
-            coordinates = model.PointObj.GetCoordCartesian(point_id)
-            if len(coordinates) >= 3:
-                mass_df.loc[index, ['X', 'Y', 'Z']] = coordinates[:3]
-        except (AttributeError, IndexError, TypeError, ValueError):
-            # Retain table coordinates for rows that are not point objects.
-            continue
+        point_id = str(point_id).lstrip('~')
+        point_names = [point_id, f'N{point_id}']
+        for point_name in point_names:
+            try:
+                coordinates = model.PointObj.GetCoordCartesian(point_name)
+                if len(coordinates) >= 3:
+                    mass_df.loc[index, ['X', 'Y', 'Z']] = coordinates[:3]
+                    break
+            except (AttributeError, IndexError, TypeError, ValueError):
+                # Try the alternate ETABS internal-point naming convention.
+                continue
     numeric_cols = ['PointElm', 'UX', 'UY', 'UZ', 'RX', 'RY', 'RZ', 'X', 'Y', 'Z']
     mass_df[numeric_cols] = mass_df[numeric_cols].apply(
         lambda column: pd.to_numeric(

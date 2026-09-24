@@ -231,7 +231,7 @@ def modal_response(numEigen):
             ) from lapack_error
     eigenValues = np.asarray(eigenValues, dtype=float)
     if (len(eigenValues) < numEigen or not np.all(np.isfinite(eigenValues))
-            or np.any(eigenValues <= 0)):
+            or np.any(eigenValues <= 1e-12)):
         raise RuntimeError(
             'OpenSees returned invalid eigenvalues. The model is singular or '
             'has insufficient mass after ETABS node mapping: '
@@ -459,7 +459,7 @@ def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, 
     
     total_run_time = 50 # seconds
     time_step = 0.01 # seconds
-    total_num_of_steps = total_run_time / time_step
+    total_num_of_steps = int(total_run_time / time_step)
     
     # default initialization of constants to be used in the execution loop
     failed = 0
@@ -494,7 +494,13 @@ def run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, 
             
         pbar.update(1)
         time = op.getTime()
-    
+    pbar.close()
+    if failed:
+        raise RuntimeError(
+            'OpenSees transient analysis failed after all fallback algorithms '
+            f'at analysis time {time:.6g} seconds.'
+        )
+
     op.wipe()
     
     # move output files to results directory
