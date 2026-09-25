@@ -42,7 +42,9 @@
 
 from general_utilities import start_time, end_time
 from etabs_utilities import get_etabs_data
-from opensees_utilities import setup_opensees_model, perform_modal_analysis_and_comparison, run_opensees_model
+from opensees_utilities import (setup_opensees_model, perform_modal_analysis_and_comparison,
+                                run_opensees_model, visualize_model, save_model_geometry,
+                                animate_deformed_shape)
 from opensees_postprocessor import post_process, base_shear
 import time
 import os
@@ -68,6 +70,12 @@ if __name__ == '__main__':
     print('OpenSees Model Created!')
     end_time(start, final=False)
     
+    # VISUALIZE THE CONVERTED MODEL AND SNAPSHOT ITS GEOMETRY. The snapshot is
+    # needed later because the dynamic analysis wipes the OpenSees model, so the
+    # deformed-shape animator can no longer read coordinates from it.
+    visualize_model(parent_dir=working_dir, show=False)
+    save_model_geometry(working_dir)
+    
     print(''.center(100, '-'))
     print(':: RUN OPENSEES MODEL ::'.center(100))
     print(''.center(100, '-'))
@@ -86,6 +94,10 @@ if __name__ == '__main__':
     # POST-PROCESS ANALYSIS DATA
     df = post_process(initialOrTangent, working_dir)
     base_shear(working_dir, dict_of_rxn_nodes, initialOrTangent)
+    
+    # ANIMATE THE DEFORMED SHAPE THROUGH THE GROUND MOTION from the recorded
+    # node displacements + the geometry snapshot saved before the analysis wipe.
+    animate_deformed_shape(working_dir, initialOrTangent=initialOrTangent, show=False)
     
     # FINISH
     end_time(start)

@@ -208,7 +208,7 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
         print(f'Warning: skipped {len(skipped_nodes)} ETABS mass rows that could '
               'not be mapped to any OpenSees node or floor diaphragm.')
     print(f'Mass assigned to {len(masses_by_node)} nodes '
-          f'(total |UX|+|UY|+|UZ| ≈ {total_trans_mass:.4g}).')
+          f'(total |UX|+|UY|+|UZ| ~ {total_trans_mass:.4g}).')
 
     if total_trans_mass < 1e-6:
         raise RuntimeError(
@@ -314,6 +314,184 @@ def plot_opensees_mode_shapes():
     for i in range(1, numEigen+1):
         opp.plot_modeshape(i, 50)
     return
+
+# READ NODE COORDINATES AND ELEMENT CONNECTIVITY FROM THE LIVE OPENSEES MODEL.
+# Must be called before op.wipe(); the dynamic analysis wipes the model, so this
+# is the only way to recover geometry for plotting/animation afterwards.
+def get_model_geometry():
+    _require_opensees()
+    node_coords = {}
+    for tag in op.getNodeTags():
+        node_coords[int(tag)] = tuple(float(c) for c in op.nodeCoord(int(tag)))
+    elements = []
+    for ele in op.getEleTags():
+        en = op.eleNodes(int(ele))
+        if len(en) >= 2:
+            elements.append((int(ele), int(en[0]), int(en[1])))
+    return node_coords, elements
+
+# PERSIST A GEOMETRY SNAPSHOT SO THE DEFORMED-SHAPE ANIMATOR CAN USE IT AFTER THE
+# MODEL HAS BEEN WIPED BY THE ANALYSIS.
+def save_model_geometry(parent_dir):
+    import pickle
+    os.makedirs(parent_dir, exist_ok=True)
+    node_coords, elements = get_model_geometry()
+    path = os.path.join(parent_dir, 'model_geometry.pkl')
+    with open(path, 'wb') as f:
+        pickle.dump({'node_coords': node_coords, 'elements': elements}, f)
+    return path
+
+# FORCE EQUAL DATA ASPECT ON ALL THREE AXES SO THE FRAME IS NOT DISTORTED.
+def _set_axes_equal(ax):
+    x_lim = ax.get_xlim3d(); y_lim = ax.get_ylim3d(); z_lim = ax.get_zlim3d()
+    x_range = abs(x_lim[1] - x_lim[0]); x_mid = sum(x_lim) / 2.0
+    y_range = abs(y_lim[1] - y_lim[0]); y_mid = sum(y_lim) / 2.0
+    z_range = abs(z_lim[1] - z_lim[0]); z_mid = sum(z_lim) / 2.0
+    plot_radius = 0.5 * max([x_range, y_range, z_range])
+    ax.set_xlim3d([x_mid - plot_radius, x_mid + plot_radius])
+    ax.set_ylim3d([y_mid - plot_radius, y_mid + plot_radius])
+    ax.set_zlim3d([z_mid - plot_radius, z_mid + plot_radius])
+
+# PLOT THE CONVERTED OPENSEES MODEL AS A 3D FRAME (NODES + BEAMS). Pure
+# matplotlib - deliberately does NOT use Get_Rendering, whose plot_model() is
+# broken in this OpenSeesPy build and whose deformed/animation helpers require a
+# saved output database the pipeline does not produce.
+def visualize_model(parent_dir=None, show=True, node_coords=None, elements=None,
+                    title='Converted OpenSees model'):
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers 3d projection)
+
+    if node_coords is None or elements is None:
+        node_coords, elements = get_model_geometry()
+
+    fig = plt.figure(figsize=(9, 9))
+    ax = fig.add_subplot(111, projection='3d')
+
+    for _ele, i, j in elements:
+        if i in node_coords and j in node_coords:
+            a = node_coords[i]; b = node_coords[j]
+            ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]],
+                    color='steelblue', lw=1.4)
+
+    if node_coords:
+        xs = [c[0] for c in node_coords.values()]
+        ys = [c[1] for c in node_coords.values()]
+        zs = [c[2] for c in node_coords.values()]
+        ax.scatter(xs, ys, zs, color='black', s=6, depthshade=False)
+
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+    _set_axes_equal(ax)
+    ax.set_title(f'{title}\n{len(node_coords)} nodes, {len(elements)} elements')
+
+    if parent_dir is not None:
+        os.makedirs(parent_dir, exist_ok=True)
+        png = os.path.join(parent_dir, 'model_visualization.png')
+        fig.savefig(png, dpi=150, bbox_inches='tight')
+        print(f'Saved model visualization to {png}')
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig, ax
+
+# ANIMATE THE DEFORMED SHAPE THROUGH THE GROUND MOTION. Reads the per-node
+# displacement recorders (node_<tag>_disp_<case>.out, 6 columns each) plus the
+# geometry snapshot saved before the analysis wiped the model. Pure matplotlib;
+# exports a gif so the result is saved even in a headless run.
+def animate_deformed_shape(parent_dir, initialOrTangent='tangent', show=True,
+                           scale=None, frame_step=25, fps=20,
+                           out_name='deformed_animation.gif'):
+    import glob
+    import pickle
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 (registers 3d projection)
+
+    geom_path = os.path.join(parent_dir, 'model_geometry.pkl')
+    with open(geom_path, 'rb') as f:
+        geom = pickle.load(f)
+    node_coords = geom['node_coords']; elements = geom['elements']
+
+    # load per-node displacement histories; each file is (steps, 6)
+    disp_files = sorted(glob.glob(os.path.join(parent_dir, f'node_*_disp_{initialOrTangent}.out')))
+    node_disp = {}
+    nsteps = None
+    for fpath in disp_files:
+        tag = int(os.path.basename(fpath).split('_')[1])
+        arr = np.loadtxt(fpath)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if arr.shape[1] < 3:
+            continue
+        arr = arr[:, :3]
+        nsteps = arr.shape[0] if nsteps is None else min(nsteps, arr.shape[0])
+        node_disp[tag] = arr
+    if not node_disp or nsteps is None or nsteps < 2:
+        print('animate_deformed_shape: no usable displacement recorders found; skipping.')
+        return None
+    for tag in list(node_disp):
+        node_disp[tag] = node_disp[tag][:nsteps]
+
+    # auto-scale so peak motion is ~10% of the model extent (visible but not silly)
+    all_disp = np.concatenate([node_disp[t] for t in node_disp])
+    max_disp = float(np.max(np.abs(all_disp)))
+    if scale is None:
+        extent = max(np.ptp([c[0] for c in node_coords.values()]),
+                     np.ptp([c[1] for c in node_coords.values()]),
+                     np.ptp([c[2] for c in node_coords.values()]))
+        scale = (0.10 * extent / max_disp) if max_disp > 0 else 1.0
+
+    def deformed_xyz(step):
+        xyz = {}
+        for tag, c in node_coords.items():
+            d = node_disp.get(tag)
+            if d is None:
+                xyz[tag] = np.array(c, dtype=float)
+            else:
+                xyz[tag] = np.array(c, dtype=float) + scale * d[step]
+        return xyz
+
+    fig = plt.figure(figsize=(9, 9))
+    ax = fig.add_subplot(111, projection='3d')
+    lines = [ax.plot([], [], [], color='steelblue', lw=1.4)[0] for _ in elements]
+    title = ax.text2D(0.5, 0.96, '', transform=ax.transAxes, ha='center')
+    xs = [c[0] for c in node_coords.values()]; ys = [c[1] for c in node_coords.values()]
+    zs = [c[2] for c in node_coords.values()]
+    pad = 0.1 * max(np.ptp(xs), np.ptp(ys), np.ptp(zs))
+    ax.set_xlim(min(xs) - pad, max(xs) + pad); ax.set_ylim(min(ys) - pad, max(ys) + pad)
+    ax.set_zlim(min(zs) - pad, max(zs) + pad)
+    _set_axes_equal(ax)
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
+
+    frames = list(range(0, nsteps, frame_step))
+    if frames[-1] != nsteps - 1:
+        frames.append(nsteps - 1)
+
+    def update(f):
+        step = frames[f]
+        xyz = deformed_xyz(step)
+        for ln, (_e, i, j) in zip(lines, elements):
+            if i in xyz and j in xyz:
+                ln.set_data([xyz[i][0], xyz[j][0]], [xyz[i][1], xyz[j][1]])
+                ln.set_3d_properties([xyz[i][2], xyz[j][2]])
+        title.set_text(f'Deformed shape (x{scale:.3g}) - step {step}/{nsteps-1}')
+        return lines + [title]
+
+    ani = FuncAnimation(fig, update, frames=len(frames), blit=False)
+    os.makedirs(parent_dir, exist_ok=True)
+    out_path = os.path.join(parent_dir, out_name)
+    ani.save(out_path, writer=PillowWriter(fps=fps))
+    print(f'Saved deformed-shape animation to {out_path} '
+          f'({len(frames)} frames, scale x{scale:.3g}, peak disp {max_disp:.4g})')
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return out_path
 
 # ADD NON-LINEAR MOMENT HINGE TO THE MODEL
 def add_beam_hinges(dict_of_hinges, dict_of_hinges_2):
