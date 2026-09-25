@@ -45,7 +45,7 @@ from etabs_utilities import get_etabs_data
 from opensees_utilities import (setup_opensees_model, perform_modal_analysis_and_comparison,
                                 run_opensees_model, visualize_model, save_model_geometry,
                                 animate_deformed_shape)
-from opensees_postprocessor import post_process, base_shear
+from opensees_postprocessor import post_process, base_shear, plot_response_histories
 import time
 import os
 
@@ -94,6 +94,7 @@ if __name__ == '__main__':
     # POST-PROCESS ANALYSIS DATA
     df = post_process(initialOrTangent, working_dir)
     base_shear(working_dir, dict_of_rxn_nodes, initialOrTangent)
+    plot_response_histories(working_dir, dict_of_rxn_nodes, initialOrTangent)
     
     # ANIMATE THE DEFORMED SHAPE THROUGH THE GROUND MOTION from the recorded
     # node displacements + the geometry snapshot saved before the analysis wipe.
