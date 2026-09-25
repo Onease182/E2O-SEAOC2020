@@ -234,6 +234,37 @@ def get_frame_props(dict_of_hinges_1, model=None):
         
     return frame_props_df.copy()
 
+# READ ELASTIC AND SHEAR MODULUS OF A MATERIAL FROM ETABS
+def get_material_E_G(model, material, cache=None):
+    # GetMPIsotropic's return layout differs between ETABS versions. On ETABS
+    # 20/21 it returns (E, U, A, G, ret); the full anisotropic-style signature
+    # returns (ret, E1, E2, E3, G12, G13, G23, A1, A2, A3, U12, U13, U23). Both
+    # are handled explicitly (with a guard for a leading return code) so the
+    # frame elements always use ETABS's own modulus - e.g. M20 concrete
+    # E = 3243 ksi - rather than a hardcoded steel value.
+    if cache is not None and material in cache:
+        return cache[material]
+
+    vals = list(model.PropMaterial.GetMPIsotropic(material))
+    if len(vals) >= 13:
+        E_mat, G_mat = float(vals[1]), float(vals[4])
+    elif len(vals) == 5:
+        # (E, U, A, G, ret); guard against a leading return code by checking
+        # that the first value is a plausible modulus (never < 1000 ksi for a
+        # structural material).
+        if float(vals[0]) < 1e3:
+            E_mat, G_mat = float(vals[1]), float(vals[4])
+        else:
+            E_mat, G_mat = float(vals[0]), float(vals[3])
+    else:
+        raise ValueError(
+            f'Unexpected GetMPIsotropic return for material {material!r}: {vals}'
+        )
+
+    if cache is not None:
+        cache[material] = (E_mat, G_mat)
+    return E_mat, G_mat
+
 # EXTRACT FRAME SECTION PROPERTIES FROM ETBAS
 def get_frame_props_from_db_table(model=None):
     
@@ -249,6 +280,19 @@ def get_frame_props_from_db_table(model=None):
     frame_props_df['I33'] = frame_props_df['I33'].astype(float) * frame_props_df ['I3Mod'].astype(float)
     frame_props_df.set_index('Name', inplace=True)
     frame_props_df = frame_props_df.astype({col:'float' for col in FLOAT_COLS})
+
+    # Attach each section's elastic (E) and shear (G) modulus, read from the
+    # material in ETABS, so the OpenSees frame elements use the true stiffness
+    # for the material actually assigned (e.g. M20 concrete) instead of a
+    # hardcoded steel modulus. Without this the periods come out ~3x too short.
+    mat_cache = {}
+    e_vals, g_vals = [], []
+    for material in frame_props_df['Material']:
+        E_mat, G_mat = get_material_E_G(model, material, mat_cache)
+        e_vals.append(E_mat)
+        g_vals.append(G_mat)
+    frame_props_df['E'] = e_vals
+    frame_props_df['G'] = g_vals
     return frame_props_df.copy()
 
 # GET JOINTS WHERE REACTION NEEDS TO BE RECORDED AND WHERE DISPLACEMENT NEEDS TO BE RECORDED

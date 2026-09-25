@@ -38,6 +38,7 @@
 '''
 
 import os
+import glob
 import numpy as np 
 import pandas as pd
 
@@ -45,18 +46,35 @@ COLS = ['FX', 'FY', 'FZ', 'MX', 'MY', 'MZ']
 COL_DICT = {i:col for i, col in zip(range(6), COLS)}
 
 def post_process(initialOrTangent, dir_):
-    fpath = os.path.join(dir_, f'ele_frc_20279_{initialOrTangent}.out')
-    fpath2 = os.path.join(dir_, f'ele_def_20279_{initialOrTangent}.out')
-        
-    df = pd.DataFrame([s.split() for s in open(fpath, 'r').readlines()])
-    df['RY'] = pd.DataFrame([s.split() for s in open(fpath2, 'r').readlines()])[0]
-    df = df.astype(float).rename(columns=COL_DICT)
-    
-    ax = df.plot(x='RY', y='MY', grid=True, figsize=(15,5))
-    ax.set_axisbelow(True)
-    
-    df.to_excel(os.path.join(dir_, f'hinge_hyst-{initialOrTangent}.xlsx'))
-    return df.copy()
+    # Plot the moment-rotation hysteresis of the first hinge element whose
+    # recorder actually produced data. The previous version hardcoded element
+    # 20279 from the SEAOC benchmark; models without that hinge produced empty
+    # .out files and crashed reading column 0. We now scan for whichever hinge
+    # files exist and skip gracefully when the model has no nonlinear hinges.
+    for fpath in sorted(glob.glob(os.path.join(dir_, f'ele_frc_*_{initialOrTangent}.out'))):
+        ele_tag = os.path.basename(fpath).split('_')[2]
+        fpath2 = os.path.join(dir_, f'ele_def_{ele_tag}_{initialOrTangent}.out')
+        if not os.path.exists(fpath2):
+            continue
+
+        frc_rows = [s.split() for s in open(fpath, 'r').readlines() if s.strip()]
+        def_rows = [s.split() for s in open(fpath2, 'r').readlines() if s.strip()]
+        if not frc_rows or not def_rows:
+            continue
+
+        df = pd.DataFrame(frc_rows)
+        df['RY'] = pd.DataFrame(def_rows)[0]
+        df = df.astype(float).rename(columns=COL_DICT)
+
+        ax = df.plot(x='RY', y='MY', grid=True, figsize=(15,5))
+        ax.set_axisbelow(True)
+
+        df.to_excel(os.path.join(dir_, f'hinge_hyst-{initialOrTangent}.xlsx'))
+        return df.copy()
+
+    print('post_process: no hinge element recorders with data were found '
+          f'in {dir_}; skipping the hysteresis plot.')
+    return None
 
 def base_shear(dir_, dict_of_rxn_nodes, initialOrTangent):
     df_shear_x = pd.DataFrame(columns = [])

@@ -110,78 +110,91 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
             nodes = [i for i in nodes_list if i not in remove_list] 
             op.rigidDiaphragm(3, *nodes)
     
-    # Apply mass to the generated OpenSees nodes.
-    # ETABS 19+ can export PointElm IDs that differ from the UniqueName
-    # values used when creating OpenSees nodes (especially after hinge
-    # node remapping). We try several strategies in order:
-    #   1. Direct PointElm ID match
-    #   2. Hinge-node remapping (real joint → new joint)
-    #   3. Geometric match with a realistic coordinate tolerance
-    #   4. Geometric match on rounded coordinates
+    # Apply the assembled joint masses to the OpenSees nodes.
+    #
+    # The "Assembled Joint Masses" table is keyed by ETABS *joint* labels, while
+    # the OpenSees nodes are created from *point-object* labels ("Point Object
+    # Connectivity"). These are different ID spaces: apart from the fixed base
+    # joints and the auto-generated centre-of-mass joints, the mass rows are
+    # meshed slab/area joints that have no matching point object. A joint label
+    # can also collide with an unrelated point-object label at a different
+    # location, so an ID match alone is not trustworthy.
+    #
+    # Every floor is a rigid diaphragm, so a floor's in-plane mass location does
+    # not affect its dynamics - only the floor total mass and rotational inertia
+    # matter (ETABS already lumps each floor's full rotational inertia into its
+    # COM joint). We therefore resolve each mass row in order:
+    #   1. joint-label match, verified by coordinate (and hinge remapping)
+    #   2. any node at the same coordinates
+    #   3. lump onto that floor's COM/diaphragm node
+    # This keeps each floor's total mass intact and leaves no floor massless,
+    # which would otherwise make the mass matrix singular and the eigenvalue
+    # analysis collapse to zero periods.
     node_tags = {int(tag) for tag in op.getNodeTags()}
-    generated_coords = joints_df[['UniqueName', 'X', 'Y', 'Z']].copy()
-    generated_coords['UniqueName'] = generated_coords['UniqueName'].astype(int)
-    generated_coords = generated_coords[generated_coords.UniqueName.isin(node_tags)]
-    generated_coords['X'] = generated_coords['X'].astype(float)
-    generated_coords['Y'] = generated_coords['Y'].astype(float)
-    generated_coords['Z'] = generated_coords['Z'].astype(float)
-    auxiliary_nodes = {int(tag) for tag in list_new_joints}
+    node_coords = {
+        int(row.UniqueName): (float(row.X), float(row.Y), float(row.Z))
+        for _, row in joints_df.iterrows()
+        if int(row.UniqueName) in node_tags
+    }
 
-    # Build reverse hinge map: new_joint → real_joint (and real → new)
+    # Diaphragm (auto / centre-of-mass) node for each floor elevation.
+    com_node_by_z = {}
+    for _, row in joints_df[joints_df.IsAuto == 'Yes'].iterrows():
+        com_node_by_z[round(float(row.Z), 3)] = int(row.UniqueName)
+
+    # Reverse hinge maps: real joint <-> new (zero-length element) joint.
     hinge_real_to_new = {int(k): int(v[0]) for k, v in dict_of_hinges.items()}
     hinge_new_to_real = {v: k for k, v in hinge_real_to_new.items()}
 
+    coord_tol = 0.1  # inches – far more realistic than 1e-8 for ETABS export
+
+    def _node_at(x, y, z):
+        for nid, (nx, ny, nz) in node_coords.items():
+            if (abs(nx - x) <= coord_tol and abs(ny - y) <= coord_tol
+                    and abs(nz - z) <= coord_tol):
+                return nid
+        return None
+
     masses_by_node = {}
     skipped_nodes = []
-    coord_tol = 0.1  # inches – far more realistic than 1e-8 for ETABS export
 
     for _, row in mass_df.iterrows():
         try:
-            node_tag = int(row.PointElm)
+            mass_values = np.array([
+                float(row.UX), float(row.UY), float(row.UZ),
+                float(row.RX), float(row.RY), float(row.RZ)
+            ], dtype=float)
+            rx, ry, rz = float(row.X), float(row.Y), float(row.Z)
+            point_elm = int(row.PointElm)
         except (TypeError, ValueError):
             skipped_nodes.append(row.PointElm)
             continue
 
-        # Strategy 1 & 2: direct ID or hinge remap
-        if node_tag not in node_tags:
-            if node_tag in hinge_real_to_new and hinge_real_to_new[node_tag] in node_tags:
-                node_tag = hinge_real_to_new[node_tag]
-            elif node_tag in hinge_new_to_real and hinge_new_to_real[node_tag] in node_tags:
-                node_tag = hinge_new_to_real[node_tag]
+        # 1. Joint-label match, confirmed by coordinate (with hinge remapping)
+        #    so a coincidental label collision cannot misplace the mass.
+        node_tag = None
+        for candidate in (point_elm,
+                          hinge_real_to_new.get(point_elm),
+                          hinge_new_to_real.get(point_elm)):
+            if candidate is not None and candidate in node_coords:
+                nx, ny, nz = node_coords[candidate]
+                if (abs(nx - rx) <= coord_tol and abs(ny - ry) <= coord_tol
+                        and abs(nz - rz) <= coord_tol):
+                    node_tag = candidate
+                    break
 
-        # Strategy 3 & 4: geometric match
-        if node_tag not in node_tags:
-            try:
-                rx, ry, rz = float(row.X), float(row.Y), float(row.Z)
-            except (TypeError, ValueError):
-                skipped_nodes.append(node_tag)
-                continue
+        # 2. Any node co-located with the mass row.
+        if node_tag is None:
+            node_tag = _node_at(rx, ry, rz)
 
-            matches = generated_coords[
-                np.isclose(generated_coords.X, rx, atol=coord_tol)
-                & np.isclose(generated_coords.Y, ry, atol=coord_tol)
-                & np.isclose(generated_coords.Z, rz, atol=coord_tol)
-            ]
-            if matches.empty:
-                # Try rounded coordinates (handles floating-point noise)
-                matches = generated_coords[
-                    (generated_coords.X.round(3) == round(rx, 3))
-                    & (generated_coords.Y.round(3) == round(ry, 3))
-                    & (generated_coords.Z.round(3) == round(rz, 3))
-                ]
+        # 3. Rigid-diaphragm lump onto the floor's COM node.
+        if node_tag is None:
+            node_tag = com_node_by_z.get(round(rz, 3))
 
-            preferred = matches[~matches.UniqueName.isin(auxiliary_nodes)]
-            if preferred.empty:
-                preferred = matches
-            if preferred.empty:
-                skipped_nodes.append(node_tag)
-                continue
-            node_tag = int(preferred.iloc[0].UniqueName)
+        if node_tag is None or node_tag not in node_tags:
+            skipped_nodes.append(point_elm)
+            continue
 
-        mass_values = np.array([
-            float(row.UX), float(row.UY), float(row.UZ),
-            float(row.RX), float(row.RY), float(row.RZ)
-        ], dtype=float)
         masses_by_node[node_tag] = masses_by_node.get(
             node_tag, np.zeros(6)
         ) + mass_values
@@ -192,16 +205,16 @@ def add_nodes(joints_df, mass_df, list_new_joints, dict_of_hinges):
         total_trans_mass += abs(mass_values[0]) + abs(mass_values[1]) + abs(mass_values[2])
 
     if skipped_nodes:
-        print(f'Warning: skipped {len(skipped_nodes)} ETABS mass rows '
-              'whose coordinates do not match an OpenSees node.')
+        print(f'Warning: skipped {len(skipped_nodes)} ETABS mass rows that could '
+              'not be mapped to any OpenSees node or floor diaphragm.')
     print(f'Mass assigned to {len(masses_by_node)} nodes '
           f'(total |UX|+|UY|+|UZ| ≈ {total_trans_mass:.4g}).')
 
     if total_trans_mass < 1e-6:
         raise RuntimeError(
-            'OpenSees model has essentially zero translational mass after '
-            'ETABS node mapping. Check that Assembled Joint Masses were '
-            'exported correctly and that hinge-node remapping is consistent.'
+            'OpenSees model has essentially zero translational mass after ETABS '
+            'node mapping. Check that Assembled Joint Masses were exported '
+            'correctly and that each floor has a centre-of-mass (auto) joint.'
         )
 
     return
@@ -221,11 +234,22 @@ def add_frames(frames_df, frame_props_df):
     # stiffness and resisting force from the basic system to the global-coordinate system.
     op.geomTransf(coordTransf, col_transf_tag,  1, 0, 0)
     op.geomTransf(coordTransf, beam_transf_tag, 0, 0, 1)
-    
+
+    # Use the elastic/shear modulus read from each section's material in ETABS
+    # (attached as 'E'/'G' columns in get_frame_props_from_db_table). The module
+    # level E/G are steel defaults kept only as a fallback if those columns are
+    # absent; for this M20 concrete frame ETABS reports E = 3243 ksi, G = 1351
+    # ksi, and using the steel values makes every period ~3x too short.
+    has_eg = 'E' in frame_props_df.columns and 'G' in frame_props_df.columns
+    def sec_E(prop):
+        return float(frame_props_df.loc[prop, 'E']) if has_eg else E
+    def sec_G(prop):
+        return float(frame_props_df.loc[prop, 'G']) if has_eg else G
+
     # add all the frame elements which are oriented with the major axis
     frames_df[frames_df.Angle == 0.00].apply(lambda row: op.element('ElasticTimoshenkoBeam'     , row.UniqueName,                           \
                                                          row.PointI                             , row.PointJ,                               \
-                                                         E, G                                   , frame_props_df.loc[row.Prop, 'Area'],     \
+                                                         sec_E(row.Prop), sec_G(row.Prop)       , frame_props_df.loc[row.Prop, 'Area'],     \
                                                          frame_props_df.loc[row.Prop, 'J']      , frame_props_df.loc[row.Prop, 'I33'] ,     \
                                                          frame_props_df.loc[row.Prop, 'I22']    , frame_props_df.loc[row.Prop, 'As3'] ,     \
                                                          frame_props_df.loc[row.Prop, 'As2']    , determine_tag(row.Label)            ,     \
@@ -234,7 +258,7 @@ def add_frames(frames_df, frame_props_df):
         # add all the frame elements which are oriented perpandicular to the major axis by switching the properties in the two aixs
     frames_df[frames_df.Angle == 90.0].apply(lambda row: op.element('ElasticTimoshenkoBeam'     , row.UniqueName,                           \
                                                          row.PointI                             , row.PointJ,                               \
-                                                         E, G                                   , frame_props_df.loc[row.Prop, 'Area'],     \
+                                                         sec_E(row.Prop), sec_G(row.Prop)       , frame_props_df.loc[row.Prop, 'Area'],     \
                                                          frame_props_df.loc[row.Prop, 'J']      , frame_props_df.loc[row.Prop, 'I22'] ,     \
                                                          frame_props_df.loc[row.Prop, 'I33']    , frame_props_df.loc[row.Prop, 'As2'] ,     \
                                                          frame_props_df.loc[row.Prop, 'As3']    , determine_tag(row.Label)            ,     \
@@ -349,20 +373,24 @@ def add_beam_hinges(dict_of_hinges, dict_of_hinges_2):
 
 # SETUP TO RECORD ANALYSIS OUTPUT
 def setup_recorders(dict_of_disp_nodes, dict_of_rxn_nodes, dict_of_hinges, initialOrTangent, parent_dir):
-    # set up node displacement recorders   
-    dict_of_disp_nodes = [61, 62, 63, 64, 65, 241, 242, 243, 244, 245]
-    for node in dict_of_disp_nodes:
+    # set up node displacement recorders for the displacement nodes passed in
+    # (joints above the base). The previous version overwrote this argument with
+    # a hardcoded node list from the SEAOC benchmark, so recorders pointed at
+    # nodes that do not exist in other models.
+    for node in dict_of_disp_nodes.keys():
         op.recorder('Node', '-file', f'node_{node}_disp_{initialOrTangent}.out', '-node', node, '-dof', 1,2,3,4,5,6, 'disp')
         
     # set up node rxn recorders    
     for node in dict_of_rxn_nodes.keys():
         op.recorder('Node', '-file', f'node_{node}_rxn_{initialOrTangent}.out', '-node', node, '-dof', 1,2,3,4,5,6, 'reaction')
     
-    # setup rot spring recorders
-    list_of_hinges = [20271, 20275, 20279, 20283, 20253, 20672, 20673, 20674, 20675, 20676]
-    for rec in list_of_hinges:
-        op.recorder('Element', '-file', f'ele_def_{rec}_{initialOrTangent}.out', '-ele', rec, 'deformations')
-        op.recorder('Element', '-file', f'ele_frc_{rec}_{initialOrTangent}.out', '-ele', rec, '-dof', 1,2,3,4,5,6, 'force')
+    # setup rot spring recorders for the zero-length hinge elements that were
+    # actually created. dict_of_hinges maps {real joint: (new joint, element tag,
+    # direction)}; the element tag is value[1]. Models without nonlinear links
+    # simply record no hinges instead of pointing at non-existent elements.
+    for ele_tag in [value[1] for value in dict_of_hinges.values()]:
+        op.recorder('Element', '-file', f'ele_def_{ele_tag}_{initialOrTangent}.out', '-ele', ele_tag, 'deformations')
+        op.recorder('Element', '-file', f'ele_frc_{ele_tag}_{initialOrTangent}.out', '-ele', ele_tag, '-dof', 1,2,3,4,5,6, 'force')
     return
 
 # READ NONLINEAR PROPERTIES OF MOMENT HINGES FROM EXCEL SHEET AND FORMAT/ADD DATA FOR OPENSEES DEFINITION
@@ -580,10 +608,51 @@ def run_opensees_model(dict_of_hinges=None, dict_of_disp_nodes=None, dict_of_rxn
     periods, eigenValues = run_dynamic_analysis_w_rayleigh_damping(dict_of_hinges, dict_of_disp_nodes, dict_of_rxn_nodes, zeta, initialOrTangent, parent_dir)
     return periods, eigenValues
 
+# RESTRAIN NODES THAT NO ELEMENT CONNECTS TO
+def restrain_unconnected_nodes(already_fixed=()):
+    # ETABS point objects that only touch slab/area objects (this model has 19
+    # area objects, which the frame-only OpenSees model does not build) end up
+    # with no element attached. The rigid diaphragm ties their in-plane DOFs
+    # (1, 2, 6) to the floor master, but their out-of-plane DOFs (3, 4, 5) then
+    # have neither stiffness nor mass - a mechanism that makes the stiffness
+    # matrix singular and collapses the eigenvalue analysis. These nodes carry no
+    # mass or load, so restraining the remaining out-of-plane DOFs removes the
+    # mechanism without changing the dynamic response.
+    #
+    # already_fixed are nodes whose out-of-plane DOFs were restrained earlier
+    # (the auto/centre-of-mass joints fixed in add_nodes); op.fix is not
+    # idempotent, so re-fixing them would raise. They are skipped, and any
+    # residual per-DOF conflict is tolerated so setup cannot abort.
+    connected = set()
+    for ele_tag in op.getEleTags():
+        connected.update(op.eleNodes(ele_tag))
+
+    skip = {int(tag) for tag in already_fixed}
+    floating = [int(tag) for tag in op.getNodeTags()
+                if int(tag) not in connected and int(tag) not in skip]
+
+    for node in floating:
+        try:
+            op.fix(node, 0, 0, 1, 1, 1, 0)
+        except Exception:
+            # A DOF is already restrained; apply the rest one at a time.
+            for dof_flags in ((0, 0, 1, 0, 0, 0), (0, 0, 0, 1, 0, 0), (0, 0, 0, 0, 1, 0)):
+                try:
+                    op.fix(node, *dof_flags)
+                except Exception:
+                    pass  # DOF already restrained
+
+    if floating:
+        print(f'Restrained out-of-plane DOFs (3,4,5) of {len(floating)} node(s) '
+              f'with no element connectivity: {sorted(floating)}')
+    return floating
+
 # SETUP OPENSEES MODEL
 def setup_opensees_model(joints_df, frames_df, frame_props_df, pts_loads_df, mass_df, dict_of_hinges, dict_of_hinges_2, list_new_joints):
     initiate_model()
     add_nodes(joints_df.copy(), mass_df.copy(), list_new_joints, dict_of_hinges)
     add_frames(frames_df.copy(), frame_props_df.copy())
     add_beam_hinges(dict_of_hinges, dict_of_hinges_2)
+    auto_nodes = joints_df.loc[joints_df.IsAuto == 'Yes', 'UniqueName'].astype(int).tolist()
+    restrain_unconnected_nodes(auto_nodes)
     return
